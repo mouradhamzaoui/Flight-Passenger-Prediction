@@ -1,0 +1,33 @@
+# ─── Delta Airlines ML API ────────────────────────────────────────────────────
+FROM python:3.11-slim
+
+LABEL maintainer="delta-ml-platform"
+LABEL description="Delta Airlines Load Factor Prediction API"
+LABEL carrier="DL"
+
+# Système
+RUN apt-get update && apt-get install -y \
+    gcc g++ curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Dépendances Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Code source
+COPY backend/     ./backend/
+COPY data/models/ ./data/models/
+COPY data/features/ ./data/features/
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+EXPOSE 8000
+
+CMD ["uvicorn", "backend.app.main:app", \
+     "--host", "0.0.0.0", "--port", "8000", \
+     "--workers", "2", "--log-level", "info"]

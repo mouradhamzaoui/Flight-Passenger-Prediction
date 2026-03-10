@@ -1,0 +1,107 @@
+# ─── Delta Airlines ML Platform — Docker Compose ─────────────────────────────
+
+
+networks:
+  delta-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mlflow_data:
+
+services:
+
+  # ─── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: delta-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER:     delta_admin
+      POSTGRES_PASSWORD: delta_secure_2026
+      POSTGRES_DB:       delta_ml_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./deployment/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - delta-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U delta_admin -d delta_ml_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── MLflow Tracking Server ─────────────────────────────────────────────────
+  mlflow:
+    image: python:3.11-slim
+    container_name: delta-mlflow
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - mlflow_data:/mlflow
+    ports:
+      - "5000:5000"
+    networks:
+      - delta-network
+    command: >
+      bash -c "pip install mlflow psycopg2-binary --quiet &&
+               mlflow server
+               --backend-store-uri postgresql://delta_admin:delta_secure_2026@postgres:5432/delta_ml_db
+               --default-artifact-root /mlflow/artifacts
+               --host 0.0.0.0
+               --port 5000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  # ─── FastAPI ML API ──────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.api
+    container_name: delta-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST:     postgres
+      POSTGRES_USER:     delta_admin
+      POSTGRES_PASSWORD: delta_secure_2026
+      POSTGRES_DB:       delta_ml_db
+      POSTGRES_PORT:     "5432"
+    ports:
+      - "8000:8000"
+    networks:
+      - delta-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ─── Streamlit POC Dashboard ─────────────────────────────────────────────────
+  streamlit:
+    build:
+      context: .
+      dockerfile: deployment/Dockerfile.streamlit
+    container_name: delta-streamlit
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    networks:
+      - delta-network
+
+  
