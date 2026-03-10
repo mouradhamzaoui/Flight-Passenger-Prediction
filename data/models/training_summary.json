@@ -1,0 +1,48 @@
+{
+  "best_model": "LightGBM",
+  "best_run_id": "8448a96882704dcb819fa4dfa6ab3e62",
+  "best_mae": 0.3633,
+  "best_r2": 0.9991,
+  "best_mape": 0.5539,
+  "trained_at": "2026-03-09T21:58:11.657106",
+  "carrier": "DL",
+  "target": "load_factor",
+  "n_features": 67,
+  "train_samples": 29526,
+  "test_samples": 8436,
+  "experiment_name": "delta_airlines_load_factor",
+  "all_models": [
+    {
+      "name": "RandomForest",
+      "mae": 2.7744,
+      "rmse": 3.6055,
+      "r2": 0.9561,
+      "mape": 4.0211,
+      "run_id": "56561264d7f540caadce6eb43d49b9ec"
+    },
+    {
+      "name": "XGBoost",
+      "mae": 0.4144,
+      "rmse": 0.5685,
+      "r2": 0.9989,
+      "mape": 0.6241,
+      "run_id": "55734e2058fd463a890cb3b5c289ce8b"
+    },
+    {
+      "name": "LightGBM",
+      "mae": 0.3633,
+      "rmse": 0.5295,
+      "r2": 0.9991,
+      "mape": 0.5539,
+      "run_id": "8448a96882704dcb819fa4dfa6ab3e62"
+    },
+    {
+      "name": "GradientBoosting",
+      "mae": 0.5038,
+      "rmse": 0.6996,
+      "r2": 0.9983,
+      "mape": 0.773,
+      "run_id": "e92db07cabc84cefadfb20279912a6da"
+    }
+  ]
+}
