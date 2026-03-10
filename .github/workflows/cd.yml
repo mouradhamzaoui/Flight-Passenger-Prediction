@@ -1,0 +1,244 @@
+# ─── Delta Airlines ML Platform — CD Pipeline ────────────────────────────────
+name: Delta Airlines ML — CD Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: ["Delta Airlines ML — CI/CD"]
+    types: [completed]
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.11"
+  CARRIER: "DL"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+
+  # ─── JOB 1 : Build & Push Docker Images ─────────────────────────────────────
+  build-and-push:
+    name: 🐳 Build & Push Docker Images
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🔧 Generate ML artifacts
+        run: |
+          python data/download_bts.py
+          python poc/feature_engineering.py
+          python poc/train_models.py
+
+      - name: 🔑 Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🏷️ Extract metadata API
+        id: meta-api
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/delta-api
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🏷️ Extract metadata Streamlit
+        id: meta-streamlit
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/delta-streamlit
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 🐳 Build & Push API image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deployment/Dockerfile.api
+          push: true
+          tags: ${{ steps.meta-api.outputs.tags }}
+          labels: ${{ steps.meta-api.outputs.labels }}
+
+      - name: 🐳 Build & Push Streamlit image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: deployment/Dockerfile.streamlit
+          push: true
+          tags: ${{ steps.meta-streamlit.outputs.tags }}
+          labels: ${{ steps.meta-streamlit.outputs.labels }}
+
+      - name: ✅ Summarize images
+        run: |
+          echo "## 🐳 Docker Images Published" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | Tag |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| delta-api | ${{ steps.meta-api.outputs.tags }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| delta-streamlit | ${{ steps.meta-streamlit.outputs.tags }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ─── JOB 2 : Generate ML Report ──────────────────────────────────────────────
+  ml-report:
+    name: 📊 ML Performance Report
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🔧 Generate ML artifacts
+        run: |
+          python data/download_bts.py
+          python poc/feature_engineering.py
+          python poc/train_models.py
+
+      - name: 📊 Generate performance report
+        run: |
+          python -c "
+          import json
+          with open('data/models/training_summary.json') as f:
+              s = json.load(f)
+          print('## ✈️ Delta Airlines ML — Deployment Report')
+          print(f'| Metric | Value |')
+          print(f'|--------|-------|')
+          print(f'| Carrier | {s[\"carrier\"]} — Delta Only |')
+          print(f'| Best Model | {s[\"best_model\"]} |')
+          print(f'| MAE | {s[\"best_mae\"]:.3f}% |')
+          print(f'| R² | {s[\"best_r2\"]:.4f} |')
+          print(f'| MAPE | {s[\"best_mape\"]:.2f}% |')
+          print(f'| Features | {s[\"n_features\"]} |')
+          print(f'| Train Samples | {s[\"train_samples\"]:,} |')
+          " >> $GITHUB_STEP_SUMMARY
+
+      - name: 📦 Upload model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: delta-ml-artifacts-${{ github.sha }}
+          path: |
+            data/models/
+            data/features/feature_metadata.json
+          retention-days: 30
+
+  # ─── JOB 3 : Smoke Test ───────────────────────────────────────────────────────
+  smoke-test:
+    name: 🔥 Smoke Test API
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🔧 Generate ML artifacts
+        run: |
+          python data/download_bts.py
+          python poc/feature_engineering.py
+          python poc/train_models.py
+
+      - name: 🔥 Run smoke tests
+        run: |
+          python -c "
+          from fastapi.testclient import TestClient
+          from backend.app.main import app
+          from backend.app.core.predictor import predictor
+
+          predictor.load()
+          client = TestClient(app)
+
+          # Smoke test 1 — Health
+          r = client.get('/health')
+          assert r.status_code == 200
+          assert r.json()['carrier'] == 'DL'
+          print('[✓] Health check passed')
+
+          # Smoke test 2 — Predict flight
+          r = client.post('/predict/flight', json={
+              'origin': 'ATL', 'dest': 'LAX',
+              'year': 2024, 'month': 7,
+              'day_of_week': 5, 'seats': 180,
+              'avg_ticket_price': 320.0,
+              'weather_condition': 'CLEAR',
+              'is_holiday_period': True
+          })
+          assert r.status_code == 200
+          lf = r.json()['predicted_load_factor']
+          assert 20 <= lf <= 100
+          print(f'[✓] Flight prediction passed — LF={lf:.1f}%')
+
+          # Smoke test 3 — Predict route
+          r = client.post('/predict/route', json={
+              'origin': 'ATL', 'dest': 'LAX', 'year': 2024
+          })
+          assert r.status_code == 200
+          assert len(r.json()['monthly_forecasts']) == 12
+          print('[✓] Route prediction passed — 12 months forecast')
+
+          # Smoke test 4 — Predict airport
+          r = client.post('/predict/airport', json={
+              'airport': 'ATL', 'month': 7, 'year': 2024
+          })
+          assert r.status_code == 200
+          print('[✓] Airport prediction passed')
+
+          print('')
+          print('🏆 ALL SMOKE TESTS PASSED — Delta Airlines API Ready')
+          print(f'   Carrier : DL')
+          print(f'   Model   : {predictor.summary[\"best_model\"]}')
+          print(f'   MAE     : {predictor.summary[\"best_mae\"]:.3f}%')
+          "
+
+      - name: ✅ Smoke test summary
+        run: |
+          echo "## 🔥 Smoke Tests" >> $GITHUB_STEP_SUMMARY
+          echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Health Check | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Flight Prediction | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Route Forecast | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| Airport Summary | ✅ |" >> $GITHUB_STEP_SUMMARY
